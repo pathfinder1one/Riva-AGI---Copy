@@ -20,6 +20,25 @@ class RAGService:
         self.retriever = retriever or KnowledgeRetriever()
         self.llm_client = llm_client or GeminiRAGClient()
 
+    def _get_local_fallback_context(self, query: str) -> str:
+        """Reads local knowledge documents from rag_knowledge/data/raw/ and returns context."""
+        from pathlib import Path
+        raw_dir = Path(__file__).resolve().parent / "data" / "raw"
+        if not raw_dir.exists():
+            return ""
+
+        context_chunks = []
+        for file_path in raw_dir.glob("*.*"):
+            if file_path.suffix.lower() in (".md", ".txt", ".json", ".csv"):
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="ignore").strip()
+                    if content:
+                        context_chunks.append(f"Document: {file_path.name}\n{content}")
+                except Exception as e:
+                    logger.debug(f"Could not read local fallback document {file_path}: {e}")
+
+        return "\n\n---\n\n".join(context_chunks)
+
     async def query(
         self,
         user_query: str,
@@ -48,6 +67,13 @@ class RAGService:
             results = await asyncio.to_thread(self.retriever.retrieve, clean_q, top_k=retrieval_top_k)
 
         if not results:
+            local_context = self._get_local_fallback_context(clean_q)
+            if local_context and self.llm_client.is_configured:
+                logger.info("Synthesizing answer from local knowledge documents for query: '%s'", clean_q)
+                answer = await self.llm_client.generate_answer(clean_q, local_context)
+                if answer and answer.strip():
+                    return answer.strip()
+
             if not self.retriever.store.is_available():
                 logger.warning("Knowledge database is unreachable for query: '%s'", clean_q)
                 return "The knowledge database is currently unavailable. Please try again shortly."

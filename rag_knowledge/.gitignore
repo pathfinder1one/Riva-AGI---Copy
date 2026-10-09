@@ -11,6 +11,7 @@ __pycache__/
 # Local documentation
 docs/
 
-# Student data files — never commit; gitkeep preserves the empty dir in checkout
+# Student data files — never commit private sheets; gitkeep preserves the empty dir in checkout
 data/*
 !data/raw/.gitkeep
+!data/raw/nextgen_supercomputing_club.md

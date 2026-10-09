@@ -56,7 +56,9 @@ def knowledge_agent(task_data: InputData) -> AgentResponse:
         and isinstance(rag_response, str)
         and rag_response.strip()
         and "currently unavailable" not in rag_response
-        and "don't have specific details" not in rag_response
+        and "don't have" not in rag_response.lower()
+        and "do not have" not in rag_response.lower()
+        and "does not contain" not in rag_response.lower()
     ):
         formatted_content = (
             f"### Knowledge Retrieval Results for: '{query}'\n\n"

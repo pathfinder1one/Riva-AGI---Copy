@@ -19,29 +19,29 @@ from ..prompts import (
 logger = logging.getLogger("rag.gemini")
 
 def get_default_gemini_model() -> str:
-    """Retrieves primary Gemini model from environment without hardcoded fallbacks."""
+    """Retrieves primary Gemini text model from environment, ignoring WebSocket-only live models."""
     try:
         from rag_knowledge import load_env
         load_env()
     except ImportError:
         pass
-    return (
-        os.getenv("GEMINI_TEXT_MODEL", "").strip()
-        or os.getenv("GEMINI_RAG_MODEL", "").strip()
-        or os.getenv("GEMINI_MODEL", "").strip()
-        or os.getenv("GEMINI_DEFAULT_MODEL", "").strip()
-    )
+    for key in ("GEMINI_TEXT_MODEL", "GEMINI_RAG_MODEL", "GEMINI_MODEL", "GEMINI_DEFAULT_MODEL"):
+        val = os.getenv(key, "").strip()
+        if val and "live" not in val.lower():
+            return val
+    return "gemini-3.8-flash"
 
 
 def get_fallback_gemini_models() -> list[str]:
-    """Retrieves fallback Gemini models from environment without hardcoded strings."""
+    """Retrieves fallback Gemini models from environment without live WebSocket models."""
     try:
         from rag_knowledge import load_env
         load_env()
     except ImportError:
         pass
     raw = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
-    return [m.strip() for m in raw.split(",") if m.strip()]
+    models = [m.strip() for m in raw.split(",") if m.strip() and "live" not in m.lower()]
+    return models or ["gemini-3.5-flash-lite", "gemini-3-flash-preview", "gemini-flash-lite-latest"]
 
 
 DEFAULT_GEMINI_MODEL = get_default_gemini_model()
