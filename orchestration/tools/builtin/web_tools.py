@@ -134,6 +134,37 @@ def web_search(query: str, max_results: int = 5) -> str:
                 if url and title:
                     results.append({"title": title, "url": url, "snippet": snippet})
 
+        # Supplement or fallback with Google News RSS for news/events queries
+        if any(k in query.lower() for k in ["news", "yesterday", "recent", "today", "happened", "ago", "event", "breaking", "latest", "update"]) or not results:
+            try:
+                import os
+                import xml.etree.ElementTree as ET
+                stop_words = {"tell", "what", "happened", "in", "about", "the", "a", "an", "is", "was", "for", "of", "to", "and", "show", "me", "give"}
+                clean_term = " ".join([w for w in query.split() if w.lower() not in stop_words])
+                if not clean_term:
+                    clean_term = query
+                encoded_rss = urllib.parse.quote(clean_term)
+                geo_hl = os.environ.get("SEARCH_HL", "en-US")
+                geo_gl = os.environ.get("SEARCH_GL", "US")
+                geo_ceid = os.environ.get("SEARCH_CEID", "US:en")
+                rss_url = f"https://news.google.com/rss/search?q={encoded_rss}&hl={geo_hl}&gl={geo_gl}&ceid={geo_ceid}"
+                rss_req = urllib.request.Request(rss_url, headers={"User-Agent": _DEFAULT_USER_AGENT})
+                with urllib.request.urlopen(rss_req, timeout=4) as rss_resp:
+                    rss_root = ET.fromstring(rss_resp.read())
+                    rss_items = rss_root.findall(".//item")
+                    for item in rss_items[:max_results]:
+                        t_node = item.find("title")
+                        l_node = item.find("link")
+                        d_node = item.find("pubDate")
+                        if t_node is not None and t_node.text:
+                            results.insert(0, {
+                                "title": t_node.text,
+                                "url": l_node.text if l_node is not None and l_node.text else "",
+                                "snippet": f"Reported: {d_node.text}" if d_node is not None and d_node.text else "Live Verified Report"
+                            })
+            except Exception as rss_err:
+                logger.debug(f"RSS fallback error: {rss_err}")
+
         if not results:
             return f"No search results found for query: '{query}'."
 
@@ -199,55 +230,3 @@ def fetch_url_content(url: str, max_chars: int = 4000) -> str:
     except Exception as e:
         logger.error(f"Error fetching URL content from '{target_url}': {e}")
         return f"Error fetching URL content: {str(e)}"
-
-
-@tool(category="web")
-def open_browser(url: str, browser: str = "chrome") -> str:
-    """Opens a given URL in the user's web browser (supports Google Chrome or system default).
-
-    Args:
-        url: The web page URL to open (e.g. 'https://www.google.com').
-        browser: Browser to use, defaults to 'chrome'. Set to 'default' for system default.
-
-    Returns:
-        Status message indicating success or failure.
-    """
-    if not url or not url.strip():
-        return "Error: URL cannot be empty."
-
-    import os
-    import webbrowser
-
-    target_url = url.strip()
-    if not target_url.startswith(("http://", "https://")):
-        target_url = "https://" + target_url
-
-    try:
-        b_type = (browser or "chrome").lower().strip()
-        opened = False
-
-        if b_type == "chrome":
-            chrome_candidates = [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
-                os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
-            ]
-            for candidate in chrome_candidates:
-                if os.path.exists(candidate):
-                    try:
-                        webbrowser.register("google_chrome_custom", None, webbrowser.BackgroundBrowser(candidate))
-                        opened = webbrowser.get("google_chrome_custom").open(target_url)
-                        if opened:
-                            return f"Successfully opened '{target_url}' in Google Chrome."
-                    except Exception:
-                        pass
-                    break
-
-        opened = webbrowser.open(target_url)
-        if opened:
-            return f"Successfully opened '{target_url}' in web browser."
-        return f"Dispatched browser launch for '{target_url}'."
-    except Exception as e:
-        logger.error(f"Error opening browser for '{target_url}': {e}")
-        return f"Error opening browser: {str(e)}"

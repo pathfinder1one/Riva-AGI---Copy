@@ -4,8 +4,12 @@ Handles low-latency PCM16 audio bridging between browser Web Audio and Gemini Li
 barge-in interruption tracking, tool call execution, and automated session resumption.
 """
 
+import array
 import asyncio
+import collections
 import logging
+import math
+import time
 from typing import Optional, Any
 from fastapi import WebSocket, WebSocketDisconnect
 from google.genai import types
@@ -18,6 +22,205 @@ from voice_speech.engine.gemini.session import build_connect_config
 from voice_speech.engine.gemini.tools import dispatch_tool_call
 
 logger = logging.getLogger("riva.streaming")
+
+
+def _build_action_card(tool_name: str, args: dict, status: str = "running", elapsed_ms: int = 0, result: Optional[str] = None) -> Optional[dict]:
+    """Builds a structured action_card WebSocket payload for each tool.
+
+    The frontend uses this to dynamically inject floating DOM cards via JavaScript
+    showing live tool activity — no HTML/CSS files are modified.
+
+    Args:
+        tool_name: Name of the Gemini function being called.
+        args: Tool arguments dict.
+        status: 'running' (before execution) or 'done' (after completion).
+        elapsed_ms: Time taken in ms (only meaningful when status='done').
+
+    Returns:
+        dict payload to send via WebSocket, or None if tool needs no card.
+    """
+    elapsed_str = f"{elapsed_ms / 1000:.1f}s" if elapsed_ms else ""
+
+    if tool_name == "type_in_application":
+        app = str(args.get("app_name", "")).lower()
+        content = str(args.get("content", ""))
+        subject = str(args.get("subject", "Draft from Riva"))
+        recipient = str(args.get("recipient", "")).strip()
+        preview = content[:120] + ("..." if len(content) > 120 else "")
+
+        if "gmail" in app or "mail" in app or "email" in app:
+            import urllib.parse
+            encoded_sub = urllib.parse.quote(subject)
+            encoded_body = urllib.parse.quote(content)
+            encoded_to = urllib.parse.quote(recipient) if recipient else ""
+            compose_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={encoded_to}&su={encoded_sub}&body={encoded_body}"
+            return {
+                "type": "action_card",
+                "tool": tool_name,
+                "icon": "📧",
+                "title": "Gmail — Composing Email" if status == "running" else f"✅ Email Opened in Gmail ({elapsed_str})",
+                "subject": subject,
+                "recipient": recipient,
+                "preview": preview,
+                "url": compose_url,
+                "status": status,
+            }
+        else:
+            return {
+                "type": "action_card",
+                "tool": tool_name,
+                "icon": "📝",
+                "title": "Notepad — Live Typing" if status == "running" else f"✅ Typed in Notepad ({elapsed_str})",
+                "preview": preview,
+                "status": status,
+            }
+
+    elif tool_name == "open_application":
+        target = str(args.get("target", "")).strip()
+        icons = {
+            "camera": "📷", "webcam": "📷", "gmail": "📧", "mail": "📧",
+            "notepad": "📝", "calc": "🧮", "calculator": "🧮",
+            "youtube": "▶️", "spotify": "🎵", "chrome": "🌐",
+            "browser": "🌐", "google": "🌐", "github": "🐱",
+            "whatsapp": "💬", "settings": "⚙️", "leetcode": "💻",
+            "chatgpt": "🤖",
+        }
+        icon = icons.get(target.lower(), "🖥️")
+        
+        resolved_url = None
+        if "leetcode" in target.lower():
+            from voice_speech.engine.browser.dom_inspector import to_leetcode_url
+            resolved_url = to_leetcode_url(target)
+            icon = "💻"
+        elif target.lower() in ("gmail", "mail", "email"):
+            resolved_url = "https://mail.google.com"
+        elif target.lower() == "irctc":
+            resolved_url = "https://www.irctc.co.in"
+            icon = "🚆"
+        elif target.lower() == "youtube":
+            resolved_url = "https://www.youtube.com"
+        elif target.lower() == "github":
+            resolved_url = "https://github.com"
+        elif target.lower() in ("chatgpt", "openai"):
+            resolved_url = "https://chatgpt.com"
+        elif target.startswith(("http://", "https://")):
+            resolved_url = target
+        elif "." in target and not target.endswith((".exe", ".bat", ".cmd", ".ps1")):
+            resolved_url = "https://" + target
+
+        card = {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": icon,
+            "title": f"Opening {target.title()}..." if status == "running" else f"✅ {target.title()} Opened ({elapsed_str})",
+            "status": status,
+        }
+        if resolved_url:
+            card["url"] = resolved_url
+        return card
+
+    elif tool_name == "capture_photo":
+        return {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": "📸",
+            "title": "Capturing photo from webcam..." if status == "running" else f"✅ Photo Captured & Saved ({elapsed_str})",
+            "status": status,
+        }
+
+    elif tool_name == "delegate_to_orchestrator":
+        task = str(args.get("task_prompt", ""))
+        preview = task[:100] + ("..." if len(task) > 100 else "")
+        return {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": "🤖",
+            "title": "Multi-Agent Orchestrator Running..." if status == "running" else f"✅ Task Complete ({elapsed_str})",
+            "preview": preview,
+            "status": status,
+        }
+
+    elif tool_name == "inspect_browser_tab":
+        target = str(args.get("target", "active")).strip()
+        icon = "💻" if "leetcode" in target.lower() else ("📧" if "gmail" in target.lower() else "🔍")
+        url_map = {
+            "leetcode": "https://leetcode.com/problemset/",
+            "gmail": "https://mail.google.com",
+            "mail": "https://mail.google.com",
+            "github": "https://github.com",
+        }
+        card = {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": icon,
+            "title": f"Inspecting {target.title()} DOM..." if status == "running" else f"✅ {target.title()} Context Extracted ({elapsed_str})",
+            "status": status,
+            "target": target,
+        }
+        if target.lower() in url_map:
+            card["url"] = url_map[target.lower()]
+        if result:
+            card["result"] = result
+            card["preview"] = result[:250] + ("..." if len(result) > 250 else "")
+        return card
+
+    elif tool_name == "get_latest_news":
+        query = str(args.get("query", ""))
+        return {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": "🌐",
+            "title": f'Searching: "{query[:60]}"' if status == "running" else f"✅ Search Complete ({elapsed_str})",
+            "status": status,
+        }
+
+    elif tool_name == "solve_leetcode_problem":
+        from voice_speech.engine.browser.dom_inspector import to_leetcode_url
+        problem_name = str(args.get("problem_name", "")).strip()
+        url = to_leetcode_url(problem_name) if problem_name else "https://leetcode.com/problemset/"
+        title = f"Solving '{problem_name}'..." if problem_name else "Solving LeetCode Problem..."
+        if status != "running":
+            title = f"✅ '{problem_name or 'Problem'}' Solved ({elapsed_str})"
+        return {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": "💻",
+            "title": title,
+            "url": url,
+            "status": status,
+        }
+
+    elif tool_name == "next_leetcode_question":
+        return {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": "🔀",
+            "title": "Loading Next Question..." if status == "running" else f"✅ Next Question Loaded ({elapsed_str})",
+            "url": "https://leetcode.com/problemset/",
+            "status": status,
+        }
+
+    elif tool_name == "send_current_draft":
+        return {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": "🚀",
+            "title": "Sending Email Draft..." if status == "running" else f"✅ Email Sent Successfully ({elapsed_str})",
+            "preview": "Triggered Send button in Gmail window.",
+            "status": status,
+        }
+
+    elif tool_name == "submit_leetcode_solution":
+        return {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": "🚀",
+            "title": "Submitting LeetCode Solution..." if status == "running" else f"✅ Solution Submitted ({elapsed_str})",
+            "preview": "Triggered Submit button on LeetCode.",
+            "status": status,
+        }
+
+    return None
 
 
 async def ws_reader(websocket: WebSocket, state: ConversationState) -> None:
@@ -44,16 +247,50 @@ async def ws_reader(websocket: WebSocket, state: ConversationState) -> None:
         state.terminate()
 
 
+def _calculate_pcm_rms(data: bytes) -> float:
+    """Computes zero-DC acoustic RMS energy level of 16-bit linear PCM audio."""
+    if not data:
+        return 0.0
+    trunc_len = len(data) - (len(data) % 2)
+    if trunc_len == 0:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(data[:trunc_len])
+    n = len(samples)
+    if n == 0:
+        return 0.0
+    mean = sum(samples) / n
+    ac_energy = sum((s - mean) ** 2 for s in samples)
+    return math.sqrt(ac_energy / n)
+
+
+def _is_transient_close(err: Any) -> bool:
+    """Detects transient socket closes (e.g. Google 1011/1008) that should seamlessly resume."""
+    s = str(err).lower()
+    return any(marker in s for marker in ("1011", "internal error", "1008", "aborted", "connection closed", "connectionclosed"))
+
+
+def _is_quota_error(err: Any) -> bool:
+    """Returns True only for genuine upstream quota exhaustion or rate limits."""
+    s = str(err).lower()
+    return "quota" in s or "resource_exhausted" in s or "429" in s
+
+
 async def mic_to_gemini(
     session,
     state: ConversationState,
     session_mgr: SessionManager,
     websocket: WebSocket,
 ) -> None:
-    """Transmits microphone audio chunks from the mic queue to Gemini Live in real time."""
+    """Transmits microphone audio chunks to Gemini Live in real-time with zero latency."""
     mime_type = "audio/pcm;rate=16000"
+
     while state.session_active:
         try:
+            if state.is_tool_running:
+                await asyncio.sleep(0.05)
+                continue
+
             try:
                 pcm_bytes = await asyncio.wait_for(state.mic_queue.get(), timeout=0.1)
             except asyncio.TimeoutError:
@@ -67,16 +304,22 @@ async def mic_to_gemini(
                 except asyncio.QueueEmpty:
                     break
 
+            if state.is_tool_running:
+                for _ in chunks:
+                    state.mic_queue.task_done()
+                continue
+
             combined = b"".join(chunks)
             blob = types.Blob(data=combined, mime_type=mime_type)
             await session.send_realtime_input(audio=blob)
+
             for _ in chunks:
                 state.mic_queue.task_done()
+
         except asyncio.CancelledError:
             break
         except Exception as e:
             if state.session_active:
-                logger.error(f"Gemini mic transmit error: {e}")
                 if _is_quota_error(e):
                     session_mgr.trip_circuit_breaker()
                     state.terminate()
@@ -84,13 +327,11 @@ async def mic_to_gemini(
                         websocket,
                         {"type": "error", "message": f"Gemini API Quota Exceeded. Please wait ~{int(session_mgr.cooldown_seconds)}s before retrying."}
                     )
+                elif not _is_transient_close(e):
+                    logger.warning(f"Gemini mic transmit interrupted: {e}")
+                else:
+                    logger.debug(f"Gemini mic stream refreshed: {e}")
             break
-
-
-def _is_quota_error(err: Any) -> bool:
-    """Returns True only for genuine upstream quota exhaustion or rate limits."""
-    s = str(err).lower()
-    return "quota" in s or "resource_exhausted" in s or "429" in s
 
 
 async def gemini_to_browser(
@@ -123,18 +364,44 @@ async def gemini_to_browser(
                 # 1. Tool Calling Dispatch via Extensible Registry
                 tool_call = getattr(response, "tool_call", None)
                 if tool_call and getattr(tool_call, "function_calls", None):
-                    function_responses = []
-                    for fc in tool_call.function_calls:
-                        result_str = await dispatch_tool_call(fc.name, fc.args or {})
-                        function_responses.append(
-                            types.FunctionResponse(id=fc.id, name=fc.name, response={"result": result_str})
-                        )
-                    if function_responses:
-                        try:
+                    state.is_tool_running = True
+                    # Immediately notify frontend — UI can show a spinner/animation
+                    # instead of a frozen silent interface during long tasks
+                    await state.safe_send_json(
+                        websocket,
+                        {"type": "state", "state": "PROCESSING"}
+                    )
+                    try:
+                        import time as _time
+                        function_responses = []
+                        for fc in tool_call.function_calls:
+                            # Send action_card BEFORE tool runs so DOM panel appears instantly
+                            action_card = _build_action_card(fc.name, fc.args or {}, status="running")
+                            if action_card:
+                                await state.safe_send_json(websocket, action_card)
+                                logger.info(f"Sent action_card [running] for '{fc.name}'")
+
+                            t0 = _time.monotonic()
+                            result_str = await dispatch_tool_call(fc.name, fc.args or {})
+                            elapsed_ms = round((_time.monotonic() - t0) * 1000)
+                            logger.info(f"Tool '{fc.name}' completed in {elapsed_ms}ms.")
+
+                            # Send done update so DOM card shows completion
+                            if action_card:
+                                done_card = _build_action_card(fc.name, fc.args or {}, status="done", elapsed_ms=elapsed_ms, result=result_str)
+                                if done_card:
+                                    await state.safe_send_json(websocket, done_card)
+
+                            function_responses.append(
+                                types.FunctionResponse(id=fc.id, name=fc.name, response={"result": result_str})
+                            )
+                        if function_responses:
                             await session.send_tool_response(function_responses=function_responses)
                             logger.info(f"Delivered {len(function_responses)} tool response(s) to Gemini.")
-                        except Exception as tool_err:
-                            logger.error(f"Error delivering tool response: {tool_err}", exc_info=True)
+                    except Exception as tool_err:
+                        logger.error(f"Error delivering tool response: {tool_err}", exc_info=True)
+                    finally:
+                        state.is_tool_running = False
 
                 server_content = response.server_content
                 if server_content is None:
@@ -167,8 +434,8 @@ async def gemini_to_browser(
         except asyncio.CancelledError:
             break
         except Exception as e:
+            state.resumption_handle = None  # Clear invalid resumption handle on crash
             if state.session_active:
-                logger.error(f"Gemini receive error: {e}")
                 if _is_quota_error(e):
                     session_mgr.trip_circuit_breaker()
                     state.terminate()
@@ -176,6 +443,11 @@ async def gemini_to_browser(
                         websocket,
                         {"type": "error", "message": f"Gemini API Quota Exceeded. Please wait ~{int(session_mgr.cooldown_seconds)}s before retrying."}
                     )
+                elif _is_transient_close(e):
+                    logger.info("Gemini Live session reset by server (1011/transient). Resuming audio bridge seamlessly...")
+                    await state.safe_send_json(websocket, {"type": "state", "state": "LISTENING"})
+                else:
+                    logger.warning(f"Gemini receive interrupted: {e}")
             break
 
 
@@ -194,7 +466,6 @@ async def run_live_bridge(
     # Resolve authoritative persona and store on session state
     persona = resolve_persona(voice=voice, configured_gender=gender)
     state.persona = persona
-
     reader_task = asyncio.create_task(ws_reader(websocket, state))
 
     try:
@@ -208,8 +479,10 @@ async def run_live_bridge(
 
             connect_config = build_connect_config(
                 settings=settings,
-                persona=state.persona,
+                voice=voice,
                 language=language,
+                gender=gender,
+                persona=state.persona,
                 resumption_handle=state.resumption_handle,
             )
             is_resumed = bool(state.resumption_handle)
@@ -217,7 +490,6 @@ async def run_live_bridge(
                 f"Connecting to Gemini Live (model={model_name}, voice={state.persona.voice_id}, "
                 f"gender={state.persona.gender}, resumed={is_resumed})..."
             )
-
 
             try:
                 async with client.aio.live.connect(model=model_name, config=connect_config) as session:
@@ -236,6 +508,7 @@ async def run_live_bridge(
                     await asyncio.gather(*pending, return_exceptions=True)
 
             except Exception as conn_err:
+                state.resumption_handle = None
                 if not state.session_active:
                     break
                 if _is_quota_error(conn_err):
@@ -248,8 +521,12 @@ async def run_live_bridge(
                     break
 
                 if state.session_active:
-                    logger.warning(f"Gemini connection interrupted: {conn_err}. Reconnecting in 0.5s...")
-                    await asyncio.sleep(0.5)
+                    if _is_transient_close(conn_err):
+                        logger.info("Re-establishing Gemini Live session seamlessly in 0.2s...")
+                        await asyncio.sleep(0.2)
+                    else:
+                        logger.warning(f"Gemini connection interrupted: {conn_err}. Reconnecting in 0.5s...")
+                        await asyncio.sleep(0.5)
 
 
             if state.resumption_handle and state.session_active:

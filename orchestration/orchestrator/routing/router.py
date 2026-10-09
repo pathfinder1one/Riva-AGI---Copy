@@ -14,7 +14,7 @@ class IntentClassification(TypedDict):
 
 
 CONFIG_PATH = (
-    Path(__file__).resolve().parent.parent
+    Path(__file__).resolve().parent.parent.parent
     / "config"
     / "routing.json"
 )

@@ -14,7 +14,17 @@
             "sorting",
             "compile",
             "bug",
-            "script"
+            "script",
+            "file",
+            "create",
+            "make",
+            "write",
+            "construct",
+            "author",
+            ".py",
+            "generate",
+            "build",
+            "develop"
         ]
     },
     "research": {
@@ -29,7 +39,15 @@
             "how does",
             "find information",
             "information",
-            "study"
+            "study",
+            "tell me",
+            "happened",
+            "news",
+            "events",
+            "history",
+            "overview",
+            "details",
+            "search"
         ]
     },
     "seo_optimization": {

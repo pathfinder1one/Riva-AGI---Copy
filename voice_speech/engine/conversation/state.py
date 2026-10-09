@@ -16,10 +16,12 @@ from voice_speech.engine.config.persona import AgentPersona
 class ConversationState:
     """Encapsulates all mutable state for an individual active conversation session."""
     session_active: bool = True
+    is_tool_running: bool = False
     current_epoch: int = 0
     resumption_handle: Optional[str] = None
     persona: Optional[AgentPersona] = None
-    mic_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=30))
+    mic_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=150))
+    progress_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     ws_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def advance_epoch(self) -> int:

@@ -108,3 +108,34 @@ def get_system_info() -> str:
     except Exception as e:
         logger.error(f"Error retrieving system info: {e}")
         return f"Error retrieving system info: {str(e)}"
+
+
+@tool(category="system")
+def get_hardware_status() -> str:
+    """Returns real-time hardware metrics including CPU, RAM, GPU, and Battery status.
+
+    Returns:
+        Formatted string summarizing hardware performance metrics.
+    """
+    try:
+        import system_monitor
+        metrics = system_monitor.get_system_metrics()
+        cpu = metrics.get("cpu", {})
+        ram = metrics.get("memory", {})
+        battery = metrics.get("battery", {})
+        gpus = metrics.get("gpu", [])
+
+        lines = [
+            f"CPU Usage: {cpu.get('usage_percent', 'N/A')}% (Physical Cores: {cpu.get('physical_cores')}, Total: {cpu.get('total_cores')})",
+            f"RAM Usage: {ram.get('percent', 'N/A')}% ({ram.get('used_gb', 'N/A')} GB / {ram.get('total_gb', 'N/A')} GB)",
+            f"Battery: {battery.get('percent', 'N/A')}% (Plugged in: {battery.get('power_plugged', 'N/A')})",
+        ]
+        if gpus:
+            for g in gpus:
+                lines.append(f"GPU [{g.get('name')}]: {g.get('utilization_percent', 0)}% (VRAM: {g.get('memory_used_mb', 0)}/{g.get('memory_total_mb', 0)} MB)")
+        else:
+            lines.append("GPU: No dedicated NVIDIA GPU detected or pynvml not installed.")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error checking hardware metrics: {e}")
+        return f"Error checking hardware status: {str(e)}"

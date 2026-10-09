@@ -11,7 +11,13 @@ from orchestration.tools.builtin.system_tools import (
 from orchestration.tools.builtin.web_tools import (
     web_search,
     fetch_url_content,
-    open_browser,
+)
+from orchestration.tools.builtin.browser_tools import (
+    inspect_browser_dom,
+    stream_code_to_editor,
+    run_browser_code,
+    submit_browser_code,
+    navigate_browser,
 )
 
 __all__ = [
@@ -23,5 +29,9 @@ __all__ = [
     "get_system_info",
     "web_search",
     "fetch_url_content",
-    "open_browser",
+    "inspect_browser_dom",
+    "stream_code_to_editor",
+    "run_browser_code",
+    "submit_browser_code",
+    "navigate_browser",
 ]

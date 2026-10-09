@@ -1,4 +1,4 @@
-from orchestration.orchestrator.router import classify_intent
+from orchestration.orchestrator.routing.router import classify_intent
 
 
 def test_coding_task():

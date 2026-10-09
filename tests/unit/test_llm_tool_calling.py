@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from orchestration.orchestrator.llm import _wrap_tool_for_execution, call_gemini
+from orchestration.orchestrator.infra.llm import _wrap_tool_for_execution, call_gemini
 from orchestration.orchestrator.schemas.tool import ToolCall
 from orchestration.tools import tool_registry
 from orchestration import InputData, InputType
@@ -41,7 +41,7 @@ def test_tool_wrapper_error_handling():
     assert executed_log[0].tool_name == "faulty_tool"
 
 
-@patch("orchestration.orchestrator.llm.genai.Client")
+@patch("orchestration.orchestrator.infra.llm.genai.Client")
 def test_call_gemini_with_tools(mock_client_cls):
     mock_client = MagicMock()
     mock_chat = MagicMock()
