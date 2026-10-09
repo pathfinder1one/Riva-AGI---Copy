@@ -139,6 +139,25 @@ async def fetch_news_summary(query: str) -> str:
 
 
 # Tool Declarations
+QUERY_KNOWLEDGE_BASE_DECLARATION = types.FunctionDeclaration(
+    name="query_knowledge_base",
+    description=(
+        "Search internal knowledge, college data (KIET / campus), NextGen COE projects, "
+        "club activities, internal repositories, policies, or technical guidelines stored in the vector database. "
+        "Call this whenever the user asks about NextGen projects, college/club details, internal documents, or organization info."
+    ),
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "query": types.Schema(
+                type="STRING",
+                description="The search question or topic to retrieve from the knowledge base (e.g. 'how many projects running on nextgen', 'club members list')."
+            )
+        },
+        required=["query"],
+    ),
+)
+
 NEWS_TOOL_DECLARATION = types.FunctionDeclaration(
     name="get_latest_news",
     description=(
@@ -338,6 +357,7 @@ SOLVE_LEETCODE_PROBLEM_DECLARATION = types.FunctionDeclaration(
 
 DEFAULT_TOOLS: List[types.Tool] = [
     types.Tool(function_declarations=[
+        QUERY_KNOWLEDGE_BASE_DECLARATION,
         NEWS_TOOL_DECLARATION,
         ORCHESTRATOR_TOOL_DECLARATION,
         OPEN_APPLICATION_TOOL_DECLARATION,
@@ -351,6 +371,24 @@ DEFAULT_TOOLS: List[types.Tool] = [
         SUBMIT_LEETCODE_SOLUTION_DECLARATION,
     ])
 ]
+
+
+async def _handle_query_knowledge_base(args: Dict[str, Any]) -> str:
+    query = str((args or {}).get("query", "")).strip()
+    if not query:
+        return "Please specify what you would like to know from the knowledge base."
+
+    logger.info(f"[VoiceRAG] Fast-lane query: '{query}'")
+    try:
+        from rag_knowledge.service import RAGService
+        rag_service = RAGService()
+        result = await rag_service.query(query)
+        if result and isinstance(result, str) and result.strip():
+            return result
+        return f"I couldn't find specific details regarding '{query}' in our internal knowledge base."
+    except Exception as e:
+        logger.warning(f"[VoiceRAG] Knowledge base query failed: {e}")
+        return "The internal knowledge base is currently updating. Please try again shortly."
 
 
 async def _handle_get_latest_news(args: Dict[str, Any]) -> str:
@@ -783,6 +821,8 @@ async def _handle_open_website_in_browser(args: Dict[str, Any]) -> str:
 
 # Extensible Tool Handler Registry
 TOOL_REGISTRY: Dict[str, Callable[[Dict[str, Any]], Awaitable[str]]] = {
+    "query_knowledge_base": _handle_query_knowledge_base,
+    "search_knowledge_base": _handle_query_knowledge_base,
     "get_latest_news": _handle_get_latest_news,
     "delegate_to_orchestrator": _handle_delegate_to_orchestrator,
     "run_orchestration_task": _handle_run_orchestration_task,

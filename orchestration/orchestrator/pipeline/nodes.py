@@ -361,7 +361,8 @@ def create_agent_node(agent_name: str):
         tid = active_task.get("task_id", "direct_task") if active_task else "direct_task"
         art_type = (
             "code" if agent_name in ("coder", "devops")
-            else ("json_schema" if agent_name == "designer" else "text")
+            else ("knowledge" if agent_name in ("knowledge_agent", "researcher")
+            else ("json_schema" if agent_name == "designer" else "text"))
         )
         wb.publish(
             key=f"{tid}_{agent_name}_output",

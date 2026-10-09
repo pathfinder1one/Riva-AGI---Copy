@@ -101,3 +101,12 @@ async def test_open_browser_tool_dispatch():
         mock_tool.return_value = "Successfully opened 'https://example.com' in Google Chrome."
         result = await dispatch_tool_call("open_website_in_browser", {"url": "https://example.com", "browser": "chrome"})
         assert "Successfully opened" in result
+
+
+@pytest.mark.anyio
+async def test_query_knowledge_base_dispatch():
+    with patch("rag_knowledge.service.RAGService.query") as mock_rag:
+        mock_rag.return_value = "NextGen currently runs 4 active projects including Riva-AGI."
+        result = await dispatch_tool_call("query_knowledge_base", {"query": "how many projects on nextgen"})
+        assert "4 active projects" in result
+        mock_rag.assert_called_once_with("how many projects on nextgen")

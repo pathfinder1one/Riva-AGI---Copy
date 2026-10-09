@@ -164,6 +164,18 @@ def _build_action_card(tool_name: str, args: dict, status: str = "running", elap
             card["preview"] = result[:250] + ("..." if len(result) > 250 else "")
         return card
 
+    elif tool_name in ("query_knowledge_base", "search_knowledge_base"):
+        query = str(args.get("query", ""))
+        preview = query[:80] + ("..." if len(query) > 80 else "")
+        return {
+            "type": "action_card",
+            "tool": tool_name,
+            "icon": "📚",
+            "title": f'Searching Knowledge: "{preview}"' if status == "running" else f"✅ Knowledge Retrieved ({elapsed_str})",
+            "status": status,
+            "preview": (result[:200] + ("..." if len(result) > 200 else "")) if result else preview,
+        }
+
     elif tool_name == "get_latest_news":
         query = str(args.get("query", ""))
         return {
